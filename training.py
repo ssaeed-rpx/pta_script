@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 
 from nltk.corpus import wordnet
-from nltk.corpus import stopwords
+#from nltk.corpus import stopwords
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 
@@ -57,9 +57,6 @@ class LemmaCountVectorizer(CountVectorizer):
         return lambda doc: ([lemma.lemmatize(w) for w in analyzer(doc)]) 
 
     
-stopwords_extra=['include','example','may','be','first','second']
-stopwords = nltk.corpus.stopwords.words('english')
-stopwords.extend(stopwords_extra)
 
 from nltk.stem import WordNetLemmatizer
 from nltk import word_tokenize
@@ -74,7 +71,11 @@ lemma=WordNetLemmatizer()
 
 class lemmatokenizer(object):
     def __call__(self, text):
-        return [lemma.lemmatize(t) for t in word_tokenize(text) if t not in stopwords]
+
+
+
+
+        return [lemma.lemmatize(t) for t in word_tokenize(text)] #if t not in stopwords]
     
     
 from sklearn.preprocessing import FunctionTransformer
@@ -104,14 +105,19 @@ def keyword_func(input_series):
 @click.command()
 @click.argument("training_data", type=str)
 @click.option("--keywords", type=str,default='keywords.csv')
+@click.option("--pos-weight", type=float, default=1)
 @click.option("--model-file", type=str, default="model.pkl")
 @click.option("--prediction-file", type=str, default="test_predictions.csv")
+@click.option("--feature-file", type=str, default="top_model_features.csv")
+
 
 def main(
     training_data,
     keywords,
+    pos_weight,
     model_file,
-    prediction_file):
+    prediction_file,
+    feature_file):
     
     df = pd.read_csv(training_data)
     keywords=pd.read_csv(keywords)
@@ -132,6 +138,7 @@ def main(
         line2=re.sub('\b\w{1,3}\b|<.*?>|((\d+)[\.])|\((.+?)\)|[0-9]+'," ",str(line))
     
         return line2
+
 
     df['clean_descr']=df['descr'].apply(split_it)
     df['descr_300']=df.clean_descr.apply(lambda x:  ' '.join(str(x).split()[0:300]))
@@ -191,7 +198,7 @@ def main(
 
 
     LCV= CountVectorizer(stop_words=stopwords,ngram_range=(1,3),max_df=0.5,min_df=2,max_features=200000, 
-                             tokenizer=None)
+                             tokenizer=lemmatokenizer())
 
 
     concat3_transformer = pl([
@@ -233,7 +240,7 @@ def main(
 
     text_ensemble_lemmatized2= Pipeline([#('vectorizer', LCV), ('tfidf', TfidfTransformer(norm='l2',use_idf=True,smooth_idf=True)),
                                      #('RUS', SMOTE(k_neighbors=10,sampling_strategy='minority',random_state=1)),
-                                     ('lr',LogisticRegression(C=1,penalty='l2',class_weight={0:1,1:1}))])
+                                     ('lr',LogisticRegression(C=1,penalty='l2',class_weight={0:1,1:pos_weight}))])
 
     #print('Training Under Progress \n')
    
@@ -252,8 +259,41 @@ def main(
     predicted=np.where(predicted6[:,1]>0.5,1,0)
     y_score=predicted6[:,1]
 
+
+    Features=feature_pipeline.transformer_list[0][1].named_steps['vectorizer'].get_feature_names()
+
+
+    def top_tfidf_feats(row, features, top_n=3):
+        ''' Get top n tfidf values in row and return them with their corresponding feature names.'''
+        topn_ids = np.argsort(row)[::-1][:top_n]
+        top_feats = [(features[i], row[i]) for i in topn_ids]
+        df = pd.DataFrame(top_feats)
+        df.columns = ['feature', 'tfidf']
+        return top_feats
+
+
+    test_data2=test_data[:,:-1]
+
+
+    def top_feats_in_doc(df):
+    
+        az=[]
+        for row in range(len(df)):
+            row = np.squeeze(test_data2[row].toarray())
+            az.append(top_tfidf_feats(row, Features, 3))
+        
+        return az
+
+    
+
+
     test['pred']=predicted
     test['pp']=y_score
+
+    test['top_feats']=top_feats_in_doc(test)
+
+
+
 
     print("F1:",round(f1_score(y_test3,predicted,average='binary'),3))
     print("Precision:",round(precision_score(y_test3,predicted,average='binary'),3))
@@ -261,6 +301,17 @@ def main(
     print("ROC SCORE=",round(roc_auc_score(y_test3,y_score),3))
 
     print('\n')
+
+    ab=pd.DataFrame()
+
+    Features=feature_pipeline.transformer_list[0][1].named_steps['vectorizer'].get_feature_names()
+
+    ab['feature']=pd.Series(Features)
+
+    ab['coef0']=pd.Series(text_ensemble_lemmatized2.named_steps['lr'].coef_[0])
+
+  
+
 
 
 
@@ -275,7 +326,13 @@ def main(
 
     print('TN',tn,'FP',fp)
     print('FN',fn, 'TP', tp)
-    print('Training Successfully Completed in ', str(round(time()-time0,1))+' Seconds.', 'Please view test_predictions.csv file for predictions on Test Set')
+    print('Training Successfully Completed in ', str(round(time()-time0,1))+' Seconds.', 'Please view test_predictions.csv file for predictions on Test Set. \n
+            Feature list can be viewed in the file top_model_features.csv')
+
+    print(ab.sort_values(by='coef0',ascending=False).head(20))
+
+    ab.sort_values(by='coef0',ascending=False).head(20).to_csv(feature_file,index=False)
+
     
     test[['title','abstract_text','claim_text','keyword_occur','label','pred','pp']].to_csv(prediction_file, index=False)
 
