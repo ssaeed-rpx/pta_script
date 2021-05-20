@@ -8,4 +8,4 @@ After training, one can predict on another set using the prediction.py
 
 If optional flag version is not used, it defaults to 1.
 
-python3 prediction.py <predict_dataset> --version <integer>
+python3 prediction.py <predict_dataset> --version "integer"
